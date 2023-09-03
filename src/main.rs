@@ -1,15 +1,20 @@
-pub mod network;
+pub mod commands;
+pub mod config;
+pub mod enums;
+pub mod event_loop;
+pub mod models;
+pub mod options;
+pub mod rec_res;
 
 use async_std::task::spawn;
 use clap::Parser;
 
+use crate::options::Opt;
+use enums::CliArgument;
 use futures::prelude::*;
 use futures::StreamExt;
-use libp2p::{core::Multiaddr, multiaddr::Protocol};
+use libp2p::multiaddr::Protocol;
 use std::error::Error;
-use std::fs::File;
-use std::io::Write;
-use std::path::PathBuf;
 
 #[async_std::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -18,7 +23,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let opt = Opt::parse();
 
     let (mut network_client, mut network_events, network_event_loop) =
-        network::new(opt.secret_key_seed).await?;
+        config::new(opt.secret_key_seed).await?;
 
     // Spawn the network task for it to run in the background.
     spawn(network_event_loop.run());
@@ -53,15 +58,16 @@ async fn main() -> Result<(), Box<dyn Error>> {
         CliArgument::Provide { path, name } => {
             // Advertise oneself as a provider of the file on the DHT.
             network_client.start_providing(name.clone()).await;
-
+            println!("Path : {:?}", path);
             loop {
                 match network_events.next().await {
                     // Reply with the content of the file on incoming requests.
-                    Some(network::Event::InboundRequest { request, channel }) => {
+                    Some(enums::Event::InboundRequest { request, channel }) => {
                         if request == name {
-                            network_client
-                                .respond_file(std::fs::read(&path)?, channel)
-                                .await;
+                            let f = async_std::fs::read(&path)
+                                .await
+                                .expect("Unable to read file");
+                            network_client.respond_file(f, channel).await;
                         }
                     }
                     e => todo!("{:?}", e),
@@ -89,44 +95,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 .await
                 .map_err(|_| "None of the providers returned file.")?
                 .0;
-
+            println!("File Writing started.");
             // std::io::stdout().write_all(&file_content)?;
-            let mut file = File::create("/home/remon/Desktop/new_image.png")?;
-            file.write_all(&file_content)?;
+            let mut file = async_std::fs::File::create("/home/remon/Desktop/new_image.zip").await?;
+            file.write_all(&file_content).await?;
             println!("File writing finished.");
         }
     }
 
     Ok(())
-}
-
-#[derive(Parser, Debug)]
-#[clap(name = "libp2p file sharing example")]
-struct Opt {
-    /// Fixed value to generate deterministic peer ID.
-    #[clap(long)]
-    secret_key_seed: Option<u8>,
-
-    #[clap(long)]
-    peer: Option<Multiaddr>,
-
-    #[clap(long)]
-    listen_address: Option<Multiaddr>,
-
-    #[clap(subcommand)]
-    argument: CliArgument,
-}
-
-#[derive(Debug, Parser)]
-enum CliArgument {
-    Provide {
-        #[clap(long)]
-        path: PathBuf,
-        #[clap(long)]
-        name: String,
-    },
-    Get {
-        #[clap(long)]
-        name: String,
-    },
 }
